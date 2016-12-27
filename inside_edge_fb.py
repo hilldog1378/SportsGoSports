@@ -58,6 +58,7 @@ tic0=timeit.default_timer()
 tic=timeit.default_timer()
 #dataset_old = pd.read_csv('mlb_data.csv',header=0)
 dataset = pd.read_csv('MLB_Challenge_Data 2015 upd 11-2-16.csv',header=0)
+updates = pd.read_csv('OU2wB-T.csv',header=0)
 toc=timeit.default_timer()
 print('Load Time',toc - tic)
 #%%
@@ -66,9 +67,18 @@ dataset.fillna(-1000,inplace=True)
 
 #%%
 dataset.rename(columns={'Actual_PTS':'points','RECORDNUM':'id'},inplace=True)
+updates.rename(columns={'RECORDNUM':'id'},inplace=True)
 #dataset.columns = [x.lower() for x in dataset.columns]
 dataset.columns = [x.replace (" ", "_") for x in dataset.columns]
 dataset.columns = [x.replace ("-", "_") for x in dataset.columns]
+#%%
+dataset.sort_values(by='id',inplace=True)
+updates.sort_values(by='id',inplace=True)
+
+dataset['roof'] = updates['roof2']
+dataset['Current_O/U'] = updates['OU2']
+dataset['elevation'] = updates['elevation2']
+dataset['Hitter_Pitcher_B_T'] = updates['Hitter-Pitcher B-T 2']
 #%%
 object_cols = []
 object_hash_cols = []
@@ -80,9 +90,9 @@ for feature in dataset.columns:
         dataset[feature_name_hash] = pd.factorize(dataset[feature])[0]
 #%%
 
-is_sub_run = False
-#is_sub_run = True
-random_seed = 4
+#is_sub_run = False
+is_sub_run = True
+random_seed = 5
 if (is_sub_run):
     train = dataset.loc[dataset['points'] != -1000 ]
     test = dataset.loc[dataset['points'] == -1000 ]
@@ -91,7 +101,8 @@ else:
 #    train = dataset[(dataset['Week'] <= 19) & (dataset['points'] != -1000)].copy()
 #    test = dataset[(dataset['Week'] > 19) & (dataset['points'] != -1000)].copy()
 
-nfolds = 5
+nfolds = 1
+#nfolds = 5
 if nfolds > 1:
     folds = KFold(len(train), n_folds = nfolds, shuffle = True, random_state = 111)
 else:
@@ -227,17 +238,17 @@ xgb_features += base_features
 #xgb_features += features_by_med
 
 params = {'learning_rate': 0.005,
-              'subsample': 0.98,
-              'reg_alpha': 0.5,
+              'subsample': 0.99,
+              'reg_alpha': 0.3,
 #              'lambda': 0.995,
-              'gamma': 0.5,
+              'gamma': 0.05,
               'seed': 5,
               'colsample_bytree': 0.3,
 #              'n_estimators': 100,
               'objective': 'reg:linear',
               'eval_metric':'rmse',
-              'min_child_weight': 2,
-              'max_depth': 6,
+#              'min_child_weight': 2,
+              'max_depth': 7,
               }
 #xgb_features.remove('Week')
 #xgb_features.remove('BOP')
@@ -247,15 +258,14 @@ params = {'learning_rate': 0.005,
 
 #result_xgb_1 = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
 #                              print_feature_imp = True, random_seed = 6)
-#
-num_rounds_1 = 904
+num_rounds_1 = 1253
 if is_sub_run:
     num_rounds_1 /= (0.8 * 0.7)
 else:
     num_rounds_1 /= (0.8)
 num_rounds_1 = int(num_rounds_1)
 result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
-                              num_rounds = num_rounds_1,
+                              num_rounds = num_rounds_1, print_feature_imp = True,
                               use_early_stopping = False,random_seed = 6)
 
 #DF_LIST_1 = []
@@ -288,11 +298,83 @@ result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
 
 #result_xgb_samp_1 = result_xgb_1.sample(frac = 0.1,random_state = 3)
 #%%
-points_by_week = train.groupby('DayNight_hash')['points'].mean()
-points_by_week_errors = train.groupby('DayNight_hash')['points'].sem()
+hit_pos_dict = pd.Series(train.Hitter_Pos.values,index=train.Hitter_Pos_hash).to_dict()
+hit_pitch_b_t_dict = pd.Series(train.Hitter_Pitcher_B_T.values,index=train.Hitter_Pitcher_B_T_hash).to_dict()
+#%%
+bins_bavg = [-1,0,0.1,0.2,0.3,0.4,0.5,1.0]
+train['BAVG_PGLY_binned'] = np.digitize(train['BAVG_PGLY'],bins_bavg,right=True)
+bins_last5_mu = [-1,10,20,30,40,50,60,70,80,90,100]
+train['Last5_MU_SCORE_binned'] = np.digitize(train['Last5_MU_SCORE'],bins_last5_mu,right=True)
+#%%
 
-plt.errorbar(points_by_week.index,points_by_week,points_by_week_errors)
+#p.hist(result_xgb_1['pred'][result_xgb_1.Renew == 1], label = 'Renewed', alpha = 0.5,
+#       bins = 50, range = (0,0.5))
+#p.hist(result_xgb_1['pred'][result_xgb_1.Renew == 0], label = 'Did Not Renew', alpha = 0.5,
+#       bins = 50, range = (0,0.5))
+#p.xlabel('Predicted Probability of Renewal',fontsize=20)
+#p.ylabel('Members / 0.02',fontsize=20)
+
+#p.figure()
+#plt.tick_params(axis='both', which='major', labelsize=15)
+#p.legend(prop={'size':20})
+#plt.grid()
+#ax = plt.gca()
+#plt.tick_params(axis='both', which='major', labelsize=20)
+
+
+
+#pic_name = '../Images/pred_hist.png'
+#p.savefig(pic_name, bbox_inches='tight', dpi=500)
+
+def make_graph(dataset,col_name,title_name,xlabel='x',ylabel='Mean Points',
+               use_custom_dict = False, custom_dict = {},rotation='horizontal',
+               save_pic = True, pic_name = 'Images/temp.png'):
+    p.figure()
+    plt.tick_params(axis='both', which='major', labelsize=15)
+    p.legend(prop={'size':20})
+    plt.grid()
+#    ax = plt.gca()
+    plt.tick_params(axis='both', which='major', labelsize=20)
+    plt.gcf().set_size_inches(8, 4)
+    plt.rcParams.update({'font.size': 22})
+    gr = dataset.groupby(col_name)['points'].mean()
+    gr_errors = dataset.groupby(col_name)['points'].sem()
+    
+    plt.errorbar(gr.index,gr,gr_errors,fmt='o')
+    plt.title(title_name)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    if use_custom_dict:
+        my_ticks = [custom_dict[x] for x in gr.index.values]
+        plt.xticks(gr.index, my_ticks,rotation=rotation)
+#    plt.tight_layout()
+    xticks, xticklabels = plt.xticks()
+    # shift half a step to the left
+    # x0 - (x1 - x0) / 2 = (3 * x0 - x1) / 2
+    xmin = (3*xticks[0] - xticks[1])/2
+    # shaft half a step to the right
+    xmax = (3*xticks[-1] - xticks[-2])/2
+    plt.xlim(xmin, xmax)
+    plt.xticks(xticks)
+    if save_pic:
+        p.savefig(pic_name, bbox_inches='tight', dpi=500)
+
+
+
+make_graph(train,'Hitter_Pos_hash','Mean Points vs Hitter Position',xlabel='Hitter Position',
+           use_custom_dict = True, custom_dict = hit_pos_dict,pic_name = 'Images/Hitter_Pos_hash.png')    
+make_graph(train,'Hitter_Pitcher_B_T_hash','Mean Points vs Hitter Pitcher B_T',xlabel='Hitter Pitcher B_T',
+           use_custom_dict = True, custom_dict = hit_pitch_b_t_dict,rotation='vertical',pic_name = 'Images/Hitter_Pitcher_B_T.png')    
+make_graph(train,'BOP','Mean Points vs Batting Order',xlabel='BOP',pic_name = 'Images/BOP.png')
+make_graph(train,'Week','Mean Points vs Week',xlabel='Week',pic_name = 'Images/Week.png')
+make_graph(train,'Park_Adj','Mean Points vs Park Adjustment',xlabel='Park Adjustment',pic_name = 'Images/Park_Adj.png')
+make_graph(train,'BAVG_PGLY_binned','Mean Points vs BAVG PGLY',xlabel='BAVG PGLY',
+           use_custom_dict = True, custom_dict = bins_bavg,pic_name = 'Images/BAVG_PGLY.png')
+make_graph(train,'Last5_MU_SCORE_binned','Mean Points vs Last5 Mu Score',xlabel='Last5 Mu Score',
+           use_custom_dict = True, custom_dict = bins_last5_mu,pic_name = 'Images/Last5_Mu_Score.png')
+make_graph(train,'Current_O/U','Mean Points vs O/U',xlabel='Over / Under',pic_name = 'Images/CurrentOverUnder.png')
 #plt.savefig('fig.png',bbox_inches="tight",dpi=300)
+
 #%%
 #if is_sub_run:
 #    result_xgb_1 = pd.merge(result_xgb_1,test[['id','order_by_week','outtorightimpact']],left_on = ['id'],
