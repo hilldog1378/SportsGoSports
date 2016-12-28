@@ -90,19 +90,22 @@ for feature in dataset.columns:
         dataset[feature_name_hash] = pd.factorize(dataset[feature])[0]
 #%%
 
-#is_sub_run = False
-is_sub_run = True
+is_sub_run = False
+#is_sub_run = True
 random_seed = 5
 if (is_sub_run):
     train = dataset.loc[dataset['points'] != -1000 ]
     test = dataset.loc[dataset['points'] == -1000 ]
 else:
-    train, test = cross_validation.train_test_split(dataset.loc[dataset['points'] != -1000], test_size = 0.3, random_state = random_seed)
+#    train, test = cross_validation.train_test_split(dataset.loc[dataset['points'] != -1000], test_size = 0.3, random_state = random_seed)
+    train = dataset.loc[dataset['points'] != -1000 ]
+    test = dataset.loc[dataset['points'] == -1000 ]
+    
 #    train = dataset[(dataset['Week'] <= 19) & (dataset['points'] != -1000)].copy()
 #    test = dataset[(dataset['Week'] > 19) & (dataset['points'] != -1000)].copy()
 
-nfolds = 1
-#nfolds = 5
+#nfolds = 1
+nfolds = 5
 if nfolds > 1:
     folds = KFold(len(train), n_folds = nfolds, shuffle = True, random_state = 111)
 else:
@@ -258,37 +261,70 @@ params = {'learning_rate': 0.005,
 
 #result_xgb_1 = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
 #                              print_feature_imp = True, random_seed = 6)
-num_rounds_1 = 1253
-if is_sub_run:
-    num_rounds_1 /= (0.8 * 0.7)
-else:
-    num_rounds_1 /= (0.8)
-num_rounds_1 = int(num_rounds_1)
-result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
-                              num_rounds = num_rounds_1, print_feature_imp = True,
-                              use_early_stopping = False,random_seed = 6)
 
-#DF_LIST_1 = []
-#for (inTr, inTe) in folds:
-#    xtr = train.iloc[inTr].copy()
-#    xte = train.iloc[inTe].copy()
-#
-#    num_rounds_1 = 904
-#    if is_sub_run:
-#        num_rounds_1 /= (0.7)
-#    else:
-#        pass
-#    num_rounds_1 = int(num_rounds_1)
-#    result_xgb_temp = fit_xgb_model(xtr,xte,params,xgb_features,
-#                              num_rounds = num_rounds_1,
+#num_rounds_1 = 1253
+#if is_sub_run:
+#    num_rounds_1 /= (0.8 * 0.7)
+#else:
+#    num_rounds_1 /= (0.8)
+#num_rounds_1 = int(num_rounds_1)
+#result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
+#                              num_rounds = num_rounds_1, print_feature_imp = True,
 #                              use_early_stopping = False,random_seed = 6)
-#    DF_LIST_1.append(result_xgb_temp)
-#res_oob_xgb_1 = pd.concat(DF_LIST_1,ignore_index=True)
-#res_oob_xgb_1.index = res_oob_xgb_1['id']
-#res_xgb_1 = pd.concat([result_xgb_1,res_oob_xgb_1],ignore_index=True)
-#res_xgb_1.index = res_xgb_1['id']
-#del DF_LIST_1
 
+DF_LIST_1 = []
+for (inTr, inTe) in folds:
+    xtr = train.iloc[inTr].copy()
+    xte = train.iloc[inTe].copy()
+
+    num_rounds_1 = 1253
+    if is_sub_run:
+        num_rounds_1 /= (0.8)
+    else:
+        num_rounds_1 /= (0.8)
+    num_rounds_1 = int(num_rounds_1)
+    result_xgb_temp = fit_xgb_model(xtr,xte,params,xgb_features,
+                                  num_rounds = num_rounds_1, print_feature_imp = True,
+                                  use_early_stopping = False,random_seed = 6)
+    DF_LIST_1.append(result_xgb_temp)
+res_oob_xgb_1 = pd.concat(DF_LIST_1,ignore_index=True)
+res_oob_xgb_1.index = res_oob_xgb_1['id']
+
+result_xgb_1 = res_oob_xgb_1.copy()
+#result_xgb_1 = pd.concat([result_xgb_1,res_oob_xgb_1],ignore_index=True)
+#result_xgb_1.index = result_xgb_1['id']
+del DF_LIST_1
+
+#%%
+result_xgb_1['error'] = result_xgb_1['points'] - result_xgb_1['pred']
+
+#plt.hist2d(result_xgb_1.points, result_xgb_1.pred, bins=40, norm=LogNorm())
+p.figure()
+plt.hist2d(result_xgb_1.points, result_xgb_1.pred, bins=[40,40],range=[(0,40),(0,40)],cmin=1)
+plt.colorbar()
+plt.tick_params(axis='both', which='major', labelsize=15)
+plt.tick_params(axis='both', which='major', labelsize=20)
+plt.gcf().set_size_inches(8, 4)
+plt.rcParams.update({'font.size': 22})
+#plt.title('Holdout Predictions')
+plt.xlabel('Actual Points')
+plt.ylabel('Predicted Points')
+p.savefig('Images/pred_vs_actual_hist.png', bbox_inches='tight', dpi=500)
+
+p.figure()
+plt.scatter(result_xgb_1.points, result_xgb_1.error,alpha=0.25)
+plt.xlim(-0.5, 71)
+plt.ylim(-20, 60)
+plt.tick_params(axis='both', which='major', labelsize=15)
+plt.tick_params(axis='both', which='major', labelsize=20)
+plt.gcf().set_size_inches(8, 4)
+plt.rcParams.update({'font.size': 22})
+plt.grid()
+plt.xlabel('Actual Points')
+plt.ylabel('Error (Actual - Pred)')
+p.savefig('Images/error_vs_actual_scatter.png', bbox_inches='tight', dpi=500)
+#ax = plt.gca()
+#ax.set_yscale('log')
 #%%
 #if is_sub_run:
 #    res_oob_xgb_merged = pd.merge(train[['id','points']],res_oob_xgb_1,left_on = ['id'],
@@ -361,19 +397,18 @@ def make_graph(dataset,col_name,title_name,xlabel='x',ylabel='Mean Points',
 
 
 
-make_graph(train,'Hitter_Pos_hash','Mean Points vs Hitter Position',xlabel='Hitter Position',
-           use_custom_dict = True, custom_dict = hit_pos_dict,pic_name = 'Images/Hitter_Pos_hash.png')    
-make_graph(train,'Hitter_Pitcher_B_T_hash','Mean Points vs Hitter Pitcher B_T',xlabel='Hitter Pitcher B_T',
-           use_custom_dict = True, custom_dict = hit_pitch_b_t_dict,rotation='vertical',pic_name = 'Images/Hitter_Pitcher_B_T.png')    
-make_graph(train,'BOP','Mean Points vs Batting Order',xlabel='BOP',pic_name = 'Images/BOP.png')
-make_graph(train,'Week','Mean Points vs Week',xlabel='Week',pic_name = 'Images/Week.png')
-make_graph(train,'Park_Adj','Mean Points vs Park Adjustment',xlabel='Park Adjustment',pic_name = 'Images/Park_Adj.png')
-make_graph(train,'BAVG_PGLY_binned','Mean Points vs BAVG PGLY',xlabel='BAVG PGLY',
-           use_custom_dict = True, custom_dict = bins_bavg,pic_name = 'Images/BAVG_PGLY.png')
-make_graph(train,'Last5_MU_SCORE_binned','Mean Points vs Last5 Mu Score',xlabel='Last5 Mu Score',
-           use_custom_dict = True, custom_dict = bins_last5_mu,pic_name = 'Images/Last5_Mu_Score.png')
-make_graph(train,'Current_O/U','Mean Points vs O/U',xlabel='Over / Under',pic_name = 'Images/CurrentOverUnder.png')
-#plt.savefig('fig.png',bbox_inches="tight",dpi=300)
+#make_graph(train,'Hitter_Pos_hash','Mean Points vs Hitter Position',xlabel='Hitter Position',
+#           use_custom_dict = True, custom_dict = hit_pos_dict,pic_name = 'Images/Hitter_Pos_hash.png')    
+#make_graph(train,'Hitter_Pitcher_B_T_hash','Mean Points vs Hitter Pitcher B_T',xlabel='Hitter Pitcher B_T',
+#           use_custom_dict = True, custom_dict = hit_pitch_b_t_dict,rotation='vertical',pic_name = 'Images/Hitter_Pitcher_B_T.png')    
+#make_graph(train,'BOP','Mean Points vs Batting Order',xlabel='BOP',pic_name = 'Images/BOP.png')
+#make_graph(train,'Week','Mean Points vs Week',xlabel='Week',pic_name = 'Images/Week.png')
+#make_graph(train,'Park_Adj','Mean Points vs Park Adjustment',xlabel='Park Adjustment',pic_name = 'Images/Park_Adj.png')
+#make_graph(train,'BAVG_PGLY_binned','Mean Points vs BAVG PGLY',xlabel='BAVG PGLY',
+#           use_custom_dict = True, custom_dict = bins_bavg,pic_name = 'Images/BAVG_PGLY.png')
+#make_graph(train,'Last5_MU_SCORE_binned','Mean Points vs Last5 Mu Score',xlabel='Last5 Mu Score',
+#           use_custom_dict = True, custom_dict = bins_last5_mu,pic_name = 'Images/Last5_Mu_Score.png')
+#make_graph(train,'Current_O/U','Mean Points vs O/U',xlabel='Over / Under',pic_name = 'Images/CurrentOverUnder.png')
 
 #%%
 #if is_sub_run:
