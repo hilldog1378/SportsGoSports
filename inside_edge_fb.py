@@ -90,26 +90,32 @@ for feature in dataset.columns:
         dataset[feature_name_hash] = pd.factorize(dataset[feature])[0]
 #%%
 
-is_sub_run = False
-#is_sub_run = True
+#is_sub_run = False
+is_sub_run = True
+use_oof = False
+#use_oof = True
 random_seed = 5
 if (is_sub_run):
     train = dataset.loc[dataset['points'] != -1000 ]
     test = dataset.loc[dataset['points'] == -1000 ]
 else:
-#    train, test = cross_validation.train_test_split(dataset.loc[dataset['points'] != -1000], test_size = 0.3, random_state = random_seed)
-    train = dataset.loc[dataset['points'] != -1000 ]
-    test = dataset.loc[dataset['points'] == -1000 ]
+    if use_oof:
+        train = dataset.loc[dataset['points'] != -1000 ]
+        test = dataset.loc[dataset['points'] == -1000 ]
+    else:
+        train, test = cross_validation.train_test_split(dataset.loc[dataset['points'] != -1000], test_size = 0.3, random_state = random_seed)
     
 #    train = dataset[(dataset['Week'] <= 19) & (dataset['points'] != -1000)].copy()
 #    test = dataset[(dataset['Week'] > 19) & (dataset['points'] != -1000)].copy()
 
-#nfolds = 1
-nfolds = 5
-if nfolds > 1:
-    folds = KFold(len(train), n_folds = nfolds, shuffle = True, random_state = 111)
-else:
-    folds = [(slice(None, None),slice(None,None))]
+
+if use_oof:
+    nfolds = 5
+    #nfolds = 1
+    if nfolds > 1:
+        folds = KFold(len(train), n_folds = nfolds, shuffle = True, random_state = 111)
+    else:
+        folds = [(slice(None, None),slice(None,None))]
 #%%
 def get_mse(df,col = 'pred'):
     print('mse',np.sqrt(np.square(df[col] - df['points']).mean()))
@@ -127,9 +133,153 @@ def create_feature_map(features):
         outfile.write('{0}\t{1}\tq\n'.format(i, feat))
     outfile.close()
 #%%
+import re
+from io import BytesIO
+_NODEPAT = re.compile(r'(\d+):\[(.+)\]')
+_LEAFPAT = re.compile(r'(\d+):(leaf=.+)')
+_EDGEPAT = re.compile(r'yes=(\d+),no=(\d+),missing=(\d+)')
+_EDGEPAT2 = re.compile(r'yes=(\d+),no=(\d+)')
+def _parse_node(graph, text):
+    """parse dumped node"""
+    match = _NODEPAT.match(text)
+    if match is not None:
+        node = match.group(1)
+        graph.node(node, label=match.group(2), shape='circle')
+        return node
+    match = _LEAFPAT.match(text)
+    if match is not None:
+        node = match.group(1)
+        graph.node(node, label=match.group(2), shape='box')
+        return node
+    raise ValueError('Unable to parse node: {0}'.format(text))
+
+
+def _parse_edge(graph, node, text, yes_color='#0000FF', no_color='#FF0000'):
+    """parse dumped edge"""
+    try:
+        match = _EDGEPAT.match(text)
+        if match is not None:
+            yes, no, missing = match.groups()
+            if yes == missing:
+                graph.edge(node, yes, label='yes', color=yes_color)
+                graph.edge(node, no, label='no', color=no_color)
+            else:
+                graph.edge(node, yes, label='yes', color=yes_color)
+                graph.edge(node, no, label='no', color=no_color)
+            return
+    except ValueError:
+        pass
+    match = _EDGEPAT2.match(text)
+    if match is not None:
+        yes, no = match.groups()
+        graph.edge(node, yes, label='yes', color=yes_color)
+        graph.edge(node, no, label='no', color=no_color)
+        return
+    raise ValueError('Unable to parse edge: {0}'.format(text))
+
+
+def to_graphviz(booster, fmap='', num_trees=0, rankdir='UT',
+                yes_color='#0000FF', no_color='#FF0000', **kwargs):
+
+    """Convert specified tree to graphviz instance. IPython can automatically plot the
+    returned graphiz instance. Otherwise, you should call .render() method
+    of the returned graphiz instance.
+    Parameters
+    ----------
+    booster : Booster, XGBModel
+        Booster or XGBModel instance
+    fmap: str (optional)
+       The name of feature map file
+    num_trees : int, default 0
+        Specify the ordinal number of target tree
+    rankdir : str, default "UT"
+        Passed to graphiz via graph_attr
+    yes_color : str, default '#0000FF'
+        Edge color when meets the node condition.
+    no_color : str, default '#FF0000'
+        Edge color when doesn't meet the node condition.
+    kwargs :
+        Other keywords passed to graphviz graph_attr
+    Returns
+    -------
+    ax : matplotlib Axes
+    """
+
+    try:
+        from graphviz import Digraph
+    except ImportError:
+        raise ImportError('You must install graphviz to plot tree')
+
+    if not isinstance(booster, (xgb.Booster, xgb.XGBModel)):
+        raise ValueError('booster must be Booster or XGBModel instance')
+
+    if isinstance(booster, xgb.XGBModel):
+        booster = booster.booster()
+
+    tree = booster.get_dump(fmap=fmap)[num_trees]
+    tree = tree.split()
+
+    kwargs = kwargs.copy()
+    kwargs.update({'rankdir': rankdir})
+    graph = Digraph(graph_attr=kwargs)
+
+    for i, text in enumerate(tree):
+        if text[0].isdigit():
+            node = _parse_node(graph, text)
+        else:
+            if i == 0:
+                # 1st string must be node
+                raise ValueError('Unable to parse given string as tree')
+            _parse_edge(graph, node, text, yes_color=yes_color,
+                        no_color=no_color)
+
+    return graph
+
+
+def plot_tree(booster, fmap='', num_trees=0, rankdir='UT', ax=None, **kwargs):
+    """Plot specified tree.
+    Parameters
+    ----------
+    booster : Booster, XGBModel
+        Booster or XGBModel instance
+    fmap: str (optional)
+       The name of feature map file
+    num_trees : int, default 0
+        Specify the ordinal number of target tree
+    rankdir : str, default "UT"
+        Passed to graphiz via graph_attr
+    ax : matplotlib Axes, default None
+        Target axes instance. If None, new figure and axes will be created.
+    kwargs :
+        Other keywords passed to to_graphviz
+    Returns
+    -------
+    ax : matplotlib Axes
+    """
+
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.image as image
+    except ImportError:
+        raise ImportError('You must install matplotlib to plot tree')
+
+    if ax is None:
+        _, ax = plt.subplots(1, 1)
+
+    g = to_graphviz(booster, fmap=fmap, num_trees=num_trees, rankdir=rankdir, **kwargs)
+
+    s = BytesIO()
+    s.write(g.pipe(format='png'))
+    s.seek(0)
+    img = image.imread(s)
+
+    ax.imshow(img)
+    ax.axis('off')
+    return ax
+#%%
 def fit_xgb_model(train, test, params, xgb_features, num_rounds = 10, num_rounds_es = 200000,
                   use_early_stopping = True, print_feature_imp = False,
-                  random_seed = 123, calculate_rmse = True,
+                  random_seed = 123, calculate_rmse = True, save_model = False
                   ):
 
     tic=timeit.default_timer()
@@ -189,17 +339,22 @@ def fit_xgb_model(train, test, params, xgb_features, num_rounds = 10, num_rounds
                                    right_on = ['id'],how='left')
 
             result_xgb_df['error_sq'] = np.square((result_xgb_df['pred'] - result_xgb_df['points']))
+            result_xgb_df['error'] = result_xgb_df['points'] - result_xgb_df['pred']
             #reorder columns for convenience
             cols = result_xgb_df.columns.tolist()
             cols.remove('id')
             cols.remove('points')
             cols.remove('pred')
             cols.remove('error_sq')
-            result_xgb_df = result_xgb_df[['id','points','pred','error_sq'] + cols]
+            cols.remove('error')
+            result_xgb_df = result_xgb_df[['id','points','pred','error_sq','error'] + cols]
             print('rmse',round(np.sqrt(result_xgb_df['error_sq'].mean()),5))
     toc=timeit.default_timer()
     print('xgb Time',toc - tic)
-    return result_xgb_df
+    if not save_model:
+        return result_xgb_df
+    else:
+        return (result_xgb_df,xgb_classifier)
 
 #%%
 
@@ -236,6 +391,49 @@ base_features = ['Week','HitterStatus','Hitter_Pos','PitcherSOTend','PitcherSide
  'condition_hash','DayNight_hash','roof_hash']
 base_features = [feature for feature in base_features if feature not in object_cols]
 #%%
+
+#%%
+#corr_mat = train.corr()
+
+
+gen_info = ['Week','DayNight_hash','HitterStatus_hash','PlayToday_Likelihood_hash',
+            'Hitter_Pos_hash','Fanduel_Pos_hash','BOP','HitterHomeAway_hash',
+            'PitcherSide_hash','Hitter_Pitcher_B_T_hash']
+ie_info = ['PitcherSOTend_hash','HitterGLYCategory_hash','PitcherPcntlGroup_hash',
+           'HitterPcntlGroup_hash','PitcherGLYCategory_hash','PitcherGB_FLY_hash']
+h2h_info = [ 'PA_H2H','H_H2H','AB_H2H','BAVG_H2H','SLG_H2H','HR_H2H','wOBA_H2H',
+            'SO_H2H','WHAvg_H2H']
+pgly_info = [ 'PA_PGLY','H_PGLY','AB_PGLY','BAVG_PGLY','SLG_PGLY',
+             'HR_PGLY','wOBA_PGLY','SO_PGLY','WHAvg_PGLY']
+ptier_info = [ 'PA_PTier','H_PTier','AB_PTier','BAVG_PTier','SLG_PTier',
+              'HR_PTier','wOBA_PTier','SO_PTier','WHAvg_PTier']
+hgly_info = [ 'PA_HGLY','H_HGLY','AB_HGLY','BAVG_HGLY','SLG_HGLY',
+             'wOBA_HGLY','WHAvg_HGLY']
+last5_info = [ 'PA_Last_5','H_Last_5','AB_Last_5','BAVG_Last_5','XBH_Last_5',
+              'wOBA_Last_5','WHAvg_Last_5']
+homeaway_info = [ 'PA_HomeAway','wOBA_HomeAway','WHAvg_HomeAway','PA_HomeAway___Pitcher',
+                 'WOBA_HomeAway_Pitcher','WHAvg_HomeAway___Pitcher']
+pitcher_info = ['PA_vs_SO_Pitcher','H_SO_Pitcher','AB_SO_Pitcher','BAVG_SO_Pitcher',
+ 'SLG_SO_Pitcher','wOBA_vs_SO_Pitcher','WHAvg_vs_SO_Pitcher','PA_vs_GB_Pitcher',
+ 'H_GB_Pitcher','AB_GB_Pitcher','BAVG_GB_Pitcher','SLG_GB_Pitcher','wOBA_vs_GB_Pitcher',
+ 'WHAvg_vs_GB_Pitcher']      
+matchup_info = [ 'H2H_MU_SCORE','PGLY_MU_SCORE','PTier_MU_SCORE','HGLY_MU_SCORE',
+ 'SO_Tend_MU_SCORE','GB_Tend_MU_SCORE','Last5_MU_SCORE','HomeAway_MU_SCORE',
+ 'HomeAway_MU_SCORE___Pitcher','MatchupScore3','Normalized_MU3']
+hitter_history_info = ['PA_vs_SP_Side', 'Expected_wOBA','Hitter_WHRating_Avg_Last15',
+ 'Hitter_SLG_Last15', 'PA_Last15Days', 'Hitter_WHRating_Last5Days','Hitter_WHRating_Last365']
+pitcher_history_info = ['Pitcher_Good_Greats_Last_4', 'Opp._Pitcher_WHRating_Avg',
+ 'Opp._Pitcher_SLG']
+weather_info = [ 'humidity',
+ 'pressure',
+ 'temp',
+ 'chanceofrain',
+ 'outtoleftimpact',
+ 'outtorightimpact',
+ 'condition_hash']
+ballpark_info = ['elevation','roof_hash','Park_Adj']
+vegas_info = ['Current_O/U']
+#%%
 xgb_features = []
 xgb_features += base_features
 #xgb_features += features_by_med
@@ -244,7 +442,7 @@ params = {'learning_rate': 0.005,
               'subsample': 0.99,
               'reg_alpha': 0.3,
 #              'lambda': 0.995,
-              'gamma': 0.05,
+              'gamma': 0.1,
               'seed': 5,
               'colsample_bytree': 0.3,
 #              'n_estimators': 100,
@@ -252,6 +450,7 @@ params = {'learning_rate': 0.005,
               'eval_metric':'rmse',
 #              'min_child_weight': 2,
               'max_depth': 7,
+#              'max_depth': 3,
               }
 #xgb_features.remove('Week')
 #xgb_features.remove('BOP')
@@ -259,72 +458,82 @@ params = {'learning_rate': 0.005,
 #this is used to find early stopping rounds, then scale up when using all of dataset
 #as number of rounds should be proportional to size of dataset
 
+#xgb_features = [x for x in xgb_features if x not in vegas_info]
+
+#xgb_features = gen_info + weather_info + vegas_info + last5_info + pgly_info + hgly_info + hitter_history_info
+#(result_xgb_1,model_1) = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
+#                              print_feature_imp = True, random_seed = 6,save_model=True)
+
+
 #result_xgb_1 = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
 #                              print_feature_imp = True, random_seed = 6)
 
-#num_rounds_1 = 1253
-#if is_sub_run:
-#    num_rounds_1 /= (0.8 * 0.7)
-#else:
-#    num_rounds_1 /= (0.8)
-#num_rounds_1 = int(num_rounds_1)
-#result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
-#                              num_rounds = num_rounds_1, print_feature_imp = True,
-#                              use_early_stopping = False,random_seed = 6)
+num_rounds_1 = 1268
+if is_sub_run:
+    num_rounds_1 /= (0.8 * 0.7)
+else:
+    num_rounds_1 /= (0.8)
+num_rounds_1 = int(num_rounds_1)
+result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
+                              num_rounds = num_rounds_1, print_feature_imp = True,
+                              use_early_stopping = False,random_seed = 6)
 
-DF_LIST_1 = []
-for (inTr, inTe) in folds:
-    xtr = train.iloc[inTr].copy()
-    xte = train.iloc[inTe].copy()
+print('just mean rmse',np.sqrt(np.square(test.points - train.points.mean()).mean()))
 
-    num_rounds_1 = 1253
-    if is_sub_run:
-        num_rounds_1 /= (0.8)
-    else:
-        num_rounds_1 /= (0.8)
-    num_rounds_1 = int(num_rounds_1)
-    result_xgb_temp = fit_xgb_model(xtr,xte,params,xgb_features,
-                                  num_rounds = num_rounds_1, print_feature_imp = True,
-                                  use_early_stopping = False,random_seed = 6)
-    DF_LIST_1.append(result_xgb_temp)
-res_oob_xgb_1 = pd.concat(DF_LIST_1,ignore_index=True)
-res_oob_xgb_1.index = res_oob_xgb_1['id']
+if use_oof:
+    DF_LIST_1 = []
+    for (inTr, inTe) in folds:
+        xtr = train.iloc[inTr].copy()
+        xte = train.iloc[inTe].copy()
+    
+        num_rounds_1 = 1268
+        if is_sub_run:
+            num_rounds_1 /= (0.8)
+        else:
+            num_rounds_1 /= (0.8)
+        num_rounds_1 = int(num_rounds_1)
+        result_xgb_temp = fit_xgb_model(xtr,xte,params,xgb_features,
+                                      num_rounds = num_rounds_1, print_feature_imp = True,
+                                      use_early_stopping = False,random_seed = 6)
+        DF_LIST_1.append(result_xgb_temp)
+    res_oob_xgb_1 = pd.concat(DF_LIST_1,ignore_index=True)
+    res_oob_xgb_1.index = res_oob_xgb_1['id']
+    
+    result_xgb_1 = res_oob_xgb_1.copy()
+    del DF_LIST_1
 
-result_xgb_1 = res_oob_xgb_1.copy()
-#result_xgb_1 = pd.concat([result_xgb_1,res_oob_xgb_1],ignore_index=True)
-#result_xgb_1.index = result_xgb_1['id']
-del DF_LIST_1
 
 #%%
-result_xgb_1['error'] = result_xgb_1['points'] - result_xgb_1['pred']
+#temp = to_graphviz(model_1,fmap='xgb.fmap',rankdir = 'LR')
+#temp.save('simplified_example')
+#temp.render('simplified_example')
+#%%
 
-#plt.hist2d(result_xgb_1.points, result_xgb_1.pred, bins=40, norm=LogNorm())
-p.figure()
-plt.hist2d(result_xgb_1.points, result_xgb_1.pred, bins=[40,40],range=[(0,40),(0,40)],cmin=1)
-plt.colorbar()
-plt.tick_params(axis='both', which='major', labelsize=15)
-plt.tick_params(axis='both', which='major', labelsize=20)
-plt.gcf().set_size_inches(8, 4)
-plt.rcParams.update({'font.size': 22})
-#plt.title('Holdout Predictions')
-plt.xlabel('Actual Points')
-plt.ylabel('Predicted Points')
-p.savefig('Images/pred_vs_actual_hist.png', bbox_inches='tight', dpi=500)
+#p.figure()
+#plt.hist2d(result_xgb_1.points, result_xgb_1.pred, bins=[40,40],range=[(0,40),(0,40)],cmin=1)
+#plt.colorbar()
+#plt.tick_params(axis='both', which='major', labelsize=15)
+#plt.tick_params(axis='both', which='major', labelsize=20)
+#plt.gcf().set_size_inches(8, 4)
+#plt.rcParams.update({'font.size': 22})
+##plt.title('Holdout Predictions')
+#plt.xlabel('Actual Points')
+#plt.ylabel('Predicted Points')
+#p.savefig('Images/pred_vs_actual_hist.png', bbox_inches='tight', dpi=500)
+#
+#p.figure()
+#plt.scatter(result_xgb_1.points, result_xgb_1.error,alpha=0.25)
+#plt.xlim(-0.5, 71)
+#plt.ylim(-20, 60)
+#plt.tick_params(axis='both', which='major', labelsize=15)
+#plt.tick_params(axis='both', which='major', labelsize=20)
+#plt.gcf().set_size_inches(8, 4)
+#plt.rcParams.update({'font.size': 22})
+#plt.grid()
+#plt.xlabel('Actual Points')
+#plt.ylabel('Error (Actual - Pred)')
+#p.savefig('Images/error_vs_actual_scatter.png', bbox_inches='tight', dpi=500)
 
-p.figure()
-plt.scatter(result_xgb_1.points, result_xgb_1.error,alpha=0.25)
-plt.xlim(-0.5, 71)
-plt.ylim(-20, 60)
-plt.tick_params(axis='both', which='major', labelsize=15)
-plt.tick_params(axis='both', which='major', labelsize=20)
-plt.gcf().set_size_inches(8, 4)
-plt.rcParams.update({'font.size': 22})
-plt.grid()
-plt.xlabel('Actual Points')
-plt.ylabel('Error (Actual - Pred)')
-p.savefig('Images/error_vs_actual_scatter.png', bbox_inches='tight', dpi=500)
-#ax = plt.gca()
-#ax.set_yscale('log')
 #%%
 #if is_sub_run:
 #    res_oob_xgb_merged = pd.merge(train[['id','points']],res_oob_xgb_1,left_on = ['id'],
@@ -342,25 +551,6 @@ train['BAVG_PGLY_binned'] = np.digitize(train['BAVG_PGLY'],bins_bavg,right=True)
 bins_last5_mu = [-1,10,20,30,40,50,60,70,80,90,100]
 train['Last5_MU_SCORE_binned'] = np.digitize(train['Last5_MU_SCORE'],bins_last5_mu,right=True)
 #%%
-
-#p.hist(result_xgb_1['pred'][result_xgb_1.Renew == 1], label = 'Renewed', alpha = 0.5,
-#       bins = 50, range = (0,0.5))
-#p.hist(result_xgb_1['pred'][result_xgb_1.Renew == 0], label = 'Did Not Renew', alpha = 0.5,
-#       bins = 50, range = (0,0.5))
-#p.xlabel('Predicted Probability of Renewal',fontsize=20)
-#p.ylabel('Members / 0.02',fontsize=20)
-
-#p.figure()
-#plt.tick_params(axis='both', which='major', labelsize=15)
-#p.legend(prop={'size':20})
-#plt.grid()
-#ax = plt.gca()
-#plt.tick_params(axis='both', which='major', labelsize=20)
-
-
-
-#pic_name = '../Images/pred_hist.png'
-#p.savefig(pic_name, bbox_inches='tight', dpi=500)
 
 def make_graph(dataset,col_name,title_name,xlabel='x',ylabel='Mean Points',
                use_custom_dict = False, custom_dict = {},rotation='horizontal',
@@ -415,6 +605,13 @@ def make_graph(dataset,col_name,title_name,xlabel='x',ylabel='Mean Points',
 #    result_xgb_1 = pd.merge(result_xgb_1,test[['id','order_by_week','outtorightimpact']],left_on = ['id'],
 #                           right_on = ['id'],how='left')
 #    corr_test = result_xgb_1.corr()
+#%%
+
+if is_sub_run:
+    submission = result_xgb_1[['id','pred']].copy()
+    submission.rename(columns={'id':'RECORDNUM','pred':'Predicted Points'},inplace=True)
+    submission.sort_values(by='RECORDNUM')
+    submission.to_csv('sports_go_sports_submission.csv',index=False)
 #%%
 toc = timeit.default_timer()
 print('Total Time',toc - tic0)
