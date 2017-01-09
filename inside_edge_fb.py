@@ -90,8 +90,8 @@ for feature in dataset.columns:
         dataset[feature_name_hash] = pd.factorize(dataset[feature])[0]
 #%%
 
-#is_sub_run = False
-is_sub_run = True
+is_sub_run = False
+#is_sub_run = True
 use_oof = False
 #use_oof = True
 random_seed = 5
@@ -105,8 +105,8 @@ else:
     else:
         train, test = cross_validation.train_test_split(dataset.loc[dataset['points'] != -1000], test_size = 0.3, random_state = random_seed)
     
-#    train = dataset[(dataset['Week'] <= 19) & (dataset['points'] != -1000)].copy()
-#    test = dataset[(dataset['Week'] > 19) & (dataset['points'] != -1000)].copy()
+#        train = dataset[(dataset['Week'] <= 19) & (dataset['points'] != -1000)].copy()
+#        test = dataset[(dataset['Week'] > 19) & (dataset['points'] != -1000)].copy()
 
 
 if use_oof:
@@ -332,6 +332,8 @@ def fit_xgb_model(train, test, params, xgb_features, num_rounds = 10, num_rounds
     if(is_sub_run):
         print('is a submission run')
         result_xgb_df.reset_index('id',inplace=True)
+        result_xgb_df = pd.merge(result_xgb_df,test[['id','points'] + xgb_features],left_on = ['id'],
+                                   right_on = ['id'],how='left')
     else:
         if(calculate_rmse):
             result_xgb_df.reset_index('id',inplace=True)
@@ -452,6 +454,23 @@ params = {'learning_rate': 0.005,
               'max_depth': 7,
 #              'max_depth': 3,
               }
+
+#params = {'learning_rate': 0.005,
+#              'subsample': 0.6,
+#              'reg_alpha': 0.1,
+##              'lambda': 0.995,
+#              'gamma': 0.1,
+#              'seed': 5,
+#              'colsample_bytree': 0.3,
+##              'n_estimators': 100,
+#              'objective': 'reg:linear',
+#              'eval_metric':'rmse',
+##              'min_child_weight': 2,
+#              'max_depth': 1,
+##              'max_depth': 3,
+#              }
+              
+              
 #xgb_features.remove('Week')
 #xgb_features.remove('BOP')
 
@@ -461,24 +480,38 @@ params = {'learning_rate': 0.005,
 #xgb_features = [x for x in xgb_features if x not in vegas_info]
 
 #xgb_features = gen_info + weather_info + vegas_info + last5_info + pgly_info + hgly_info + hitter_history_info
-#(result_xgb_1,model_1) = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
-#                              print_feature_imp = True, random_seed = 6,save_model=True)
+(result_xgb_1,model_1) = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
+                              print_feature_imp = True, random_seed = 6,save_model=True)
+
 
 
 #result_xgb_1 = fit_xgb_model(train,test,params, xgb_features,use_early_stopping = True,
 #                              print_feature_imp = True, random_seed = 6)
+#num_rounds_1 = 1268
+#if is_sub_run:
+#    num_rounds_1 /= (0.8 * 0.7)
+#else:
+#    num_rounds_1 /= (0.8)
+#num_rounds_1 = int(num_rounds_1)
+#result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
+#                              num_rounds = num_rounds_1, print_feature_imp = True,
+#                              use_early_stopping = False,random_seed = 6)
 
-num_rounds_1 = 1268
-if is_sub_run:
-    num_rounds_1 /= (0.8 * 0.7)
-else:
-    num_rounds_1 /= (0.8)
-num_rounds_1 = int(num_rounds_1)
-result_xgb_1 = fit_xgb_model(train,test,params,xgb_features,
-                              num_rounds = num_rounds_1, print_feature_imp = True,
-                              use_early_stopping = False,random_seed = 6)
 
-print('just mean rmse',np.sqrt(np.square(test.points - train.points.mean()).mean()))
+result_xgb_1.index = result_xgb_1.id
+
+DF_LIST = []
+for bop in range(1,10):
+    result_xgb_temp = fit_xgb_model(train[train['BOP'] == bop],test[test['BOP'] == bop],params, xgb_features,use_early_stopping = True,
+                                  print_feature_imp = True, random_seed = 6)
+    DF_LIST.append(result_xgb_temp)
+
+result_xgb_2 = pd.concat(DF_LIST,ignore_index=True)
+result_xgb_2.index = result_xgb_2['id']
+
+if not is_sub_run:
+    print('rmse',round(np.sqrt(result_xgb_1['error_sq'].mean()),5))
+    print('just mean rmse',np.sqrt(np.square(test.points - train.points.mean()).mean()))
 
 if use_oof:
     DF_LIST_1 = []
@@ -502,11 +535,36 @@ if use_oof:
     result_xgb_1 = res_oob_xgb_1.copy()
     del DF_LIST_1
 
+#%%
+result_xgb_ens = result_xgb_1.copy()
+a1 = 1
+a2 = 1
+result_xgb_ens['pred'] = (result_xgb_1['pred'] * a1 + result_xgb_2['pred'] * a2) / (a1 + a2)
 
+if not is_sub_run:
+    result_xgb_ens['error_sq'] = np.square((result_xgb_ens['pred'] - result_xgb_ens['points']))
+    print('rmse',round(np.sqrt(result_xgb_ens['error_sq'].mean()),5))
+    print('just mean rmse',np.sqrt(np.square(test.points - train.points.mean()).mean()))
 #%%
 #temp = to_graphviz(model_1,fmap='xgb.fmap',rankdir = 'LR')
 #temp.save('simplified_example')
 #temp.render('simplified_example')
+#%%
+
+#importance = model_1.get_fscore(fmap='xgb.fmap')
+importance = model_1.get_score(fmap='xgb.fmap',importance_type='gain')
+importance = sorted(importance.items(), key=operator.itemgetter(1))
+
+df = pd.DataFrame(importance, columns=['feature', 'fscore'])
+df['fscore'] = df['fscore'] / df['fscore'].sum()
+
+df = df[df.index >= 90]
+plt.figure()
+df.plot()
+df.plot(kind='barh', x='feature', y='fscore', legend=False, figsize=(6, 10))
+plt.title('XGBoost Feature Importance')
+plt.xlabel('Feature Importance')
+plt.gcf().savefig('feature_importance_xgb_all.png',bbox_inches='tight', dpi=500)
 #%%
 
 #p.figure()
